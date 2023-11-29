@@ -1,0 +1,22 @@
+{
+  "name": "wrtc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start:receiver": "node receiver.js",
+    "start:transmitter": "node transmitter.js",
+    "start:signaling": "node signaling.mjs"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "node-record-lpcm16": "^1.0.1",
+    "speaker": "^0.5.4",
+    "wrtc": "^0.4.7",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "node-pre-gyp": "^0.17.0"
+  }
+}

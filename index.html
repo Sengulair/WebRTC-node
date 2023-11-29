@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC</title>
+</head>
+<body>
+  <h1>WebRTC</h1>
+  <div id="videos">
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
+  </div>
+  <div id="buttons">
+    <button id="startButton">Start</button>
+    <button id="callButton">Call</button>
+    <button id="hangupButton">Hang Up</button>
+  </div>
+  <script>
+
+    const startButton = document.getElementById('startButton');
+    const callButton = document.getElementById('callButton');
+    const hangupButton = document.getElementById('hangupButton');
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+
+    let localStream;
+    let pc;
+    let intervalId;
+
+    const offerOptions = {
+      offerToReceiveAudio: 1,
+    };
+
+    startButton.addEventListener('click', startAction);
+    callButton.addEventListener('click', callAction);
+    hangupButton.addEventListener('click', hangupAction);
+
+    const signaling = new WebSocket('ws://localhost:8080');
+
+    signaling.addEventListener('message', async event => {
+      const messageText = await event.data.text();
+
+      const message = JSON.parse(messageText);
+
+      switch (message.type) {
+        case 'offer':
+          handleOffer(message.offer);
+          break;
+        case 'answer':
+          handleAnswer(message.answer);
+          break;
+        case 'candidate':
+          handleCandidate(message.candidate);
+          break;
+        default:
+          console.error('Unknown message type:', message.type);
+          break;
+      }
+    });
+
+    const handleCandidate = async candidate => {
+      console.log('handleCandidate', candidate);
+      await pc.addIceCandidate(candidate);
+    };
+
+    const handleOffer = async offer => {
+      console.log('handleOffer', offer);
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      signaling.send(JSON.stringify({ type: 'answer', answer: pc.localDescription }));
+    };
+
+    const handleAnswer = async answer => {
+      console.log('handleAnswer', answer);
+      await pc.setRemoteDescription(answer);
+    };
+
+    function startAction() {
+      startButton.disabled = true;
+      navigator.mediaDevices.getUserMedia({
+        audio: true,
+      })
+      .then(gotStream)
+      .catch(e => {
+        alert(`getUserMedia() error: ${e.name}`);
+      });
+
+      const servers = {
+        iceServers: [
+          {
+            urls: 'turn:relay1.expressturn.com:3478',
+            username: 'ef18IC3W3OAFOU3ZW1',
+            credential: 'ZBFMwQhMIXk6DROS',
+            credentialType: 'password'
+          }
+        ]
+      };
+
+      pc = new RTCPeerConnection(servers);
+      pc.addEventListener('icecandidate', e => onIceCandidate(pc, e));
+
+      pc.addEventListener('track', event => {
+        console.log('track', event);
+        // Handle the remote stream
+        remoteVideo.srcObject = event.streams[0];
+      });
+
+      console.log('Added local stream to pc1');
+    }
+
+    function handleError(error) {
+      console.error(error);
+    }
+
+    function createOffer() {
+      pc.createOffer().then(offer => {
+        return pc.setLocalDescription(offer);
+      }).then(() => {
+        signaling.send(JSON.stringify({ type: 'offer', offer: pc.localDescription }));
+      }).catch(handleError);
+    }
+
+    function callAction() {
+      callButton.disabled = true;
+      hangupButton.disabled = false;
+
+      const audioTracks = localStream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        console.log(`Using audio device: ${audioTracks[0].label}`);
+      }
+
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      createOffer();
+    }
+
+    function onCreateSessionDescriptionError(error) {
+      console.log(`Failed to create session description: ${error.toString()}`);
+    }
+
+    function onCreateOfferSuccess(desc) {
+      console.log(`Offer \n${desc.sdp}`);
+      console.log('setLocalDescription');
+      pc.setLocalDescription(desc)
+        .then(() => onSetLocalSuccess(pc), onSetSessionDescriptionError);
+    }
+
+    function onSetLocalSuccess(pc) {
+      console.log(`setLocalDescription complete`);
+    } 
+
+    function onSetSessionDescriptionError(error) {
+      console.log(`Failed to set session description: ${error.toString()}`);
+    }
+
+    function gotStream(stream) {
+      console.log('Received local stream', stream);
+      localStream = stream;
+      callButton.disabled = false;
+    }
+
+    function onCreateAnswerSuccess(desc) {
+      pc.setLocalDescription(desc)
+        .then(() => onSetLocalSuccess(pc), onSetSessionDescriptionError);
+      console.log('pc1 setRemoteDescription start');
+    }
+
+    function onIceCandidate(pc, event) {
+      console.log('onIceCandidate', event)
+      if (event.candidate) {
+        signaling.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+      }
+      console.log(`ICE candidate:
+        ${event.candidate ? event.candidate.candidate : '(null)'}
+      `);
+    }
+
+    function onAddIceCandidateSuccess(pc) {
+      console.log(`addIceCandidate success`);
+    }
+
+    function onAddIceCandidateError(pc, error) {
+      console.log(`failed to add ICE Candidate: ${error.toString()}`);
+    }
+
+    function hangupAction() {
+      console.log('Ending call');
+      pc.close();
+      pc = null;
+      hangupButton.disabled = true;
+      callButton.disabled = false;
+    }
+
+
+  </script>
+</body>
+</html>
