@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Admin</title>
+</head>
+<body>
+  <h1>Test Admin</h1>
+
+  <textarea id="accessToken" cols="30" rows="10"></textarea>
+  <button id="createDevice">Create device for current user</button>
+
+  <script>
+    const accessToken = document.getElementById('accessToken');
+    const createDevice = document.getElementById('createDevice');
+
+    createDevice.addEventListener('click', () => {
+      fetch('http://localhost:3000/api/device', {
+        method: 'POST',
+        headers: {
+          "Authorization": "Bearer " + accessToken.value,
+        },
+      })
+        .then(res => res.json())
+        .then(res => {
+          console.log(res);
+        })
+        .catch(err => {
+          console.error(err);
+        });
+
+    });
+  </script>
+</body>
+</html>
