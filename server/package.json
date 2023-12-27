@@ -1,0 +1,32 @@
+{
+  "name": "proxy-exs",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon index.js",
+    "start": "node index.js",
+    "migrations": "knex migrate:latest --esm",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@fastify/auth": "^4.4.0",
+    "@fastify/cors": "^8.5.0",
+    "@fastify/jwt": "^7.2.4",
+    "@fastify/oauth2": "^7.7.0",
+    "@fastify/websocket": "^8.3.0",
+    "dotenv": "^16.3.1",
+    "fastify": "^4.24.3",
+    "fastify-auth": "^1.2.0",
+    "fastify-jwt": "^4.2.0",
+    "knex": "^3.1.0",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

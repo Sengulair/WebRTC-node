@@ -1,0 +1,1 @@
+export const concatUserId = (provider, id) => `${provider}:${id}`;

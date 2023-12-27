@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Client</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px
+    }
+  </style>
+</head>
+<body>
+  <h1>Client</h1>
+
+  <video id="remoteVideo" autoplay style="width: 0;"></video>
+  <div>
+    <label>Access token for user auth:<textarea id="accessToken" cols="30" rows="10"></textarea></label>
+    <input id="deviceId" type="text" placeholder="deviceId" />
+    <button id="authorize">Authorize</button>
+  </div>
+
+  <div>
+    <button id="connectWRTC">Connect mic,speakers</button>
+    <button id="disconnectWRTC">Disonnect mic,speakers</button>
+  </div>
+
+  <div>
+    <input id="command" placeholder="Command" type="text" />
+    <button id="sendCommand">Send command</button>
+  </div>
+
+  <div>
+    <label>Log:<textarea id="deviceLog" cols="30" rows="10"></textarea></label>
+  </div>
+  
+  <script>
+    const config = {
+      ws: 'ws://localhost:3000/user',
+    }
+
+    let ws = new WebSocket(config.ws);
+    const remoteVideo = document.getElementById('remoteVideo');
+    
+    const deviceIdInput = document.getElementById('deviceId');
+    const authorize = document.getElementById('authorize');
+    const disconnectWRTC = document.getElementById('disconnectWRTC');
+    const connectWRTC = document.getElementById('connectWRTC');
+    const sendCommand = document.getElementById('sendCommand');
+    const command = document.getElementById('command');
+    const accessToken = document.getElementById('accessToken');
+    const deviceLog = document.getElementById('deviceLog');
+    const deviceId = document.getElementById('deviceId');
+
+    let activePC = null;
+
+    authorize.addEventListener('click', () => {
+      ws.send(JSON.stringify({ type: 'token', token: accessToken.value }));
+    });
+
+    const createWRTCConnection = async () => {
+      const pc = new RTCPeerConnection(null);
+      pc.addEventListener('icecandidate', e => onIceCandidate(pc, e));
+
+      function onIceCandidate(pc, event) {
+        console.log('onIceCandidate', event)
+        const deviceId = deviceIdInput.value;
+        if (event.candidate) {
+          ws.send(JSON.stringify({ type: 'ICECandidate', deviceId: deviceId, candidate: event.candidate }));
+        }
+        console.log(`ICE candidate:
+          ${event.candidate ? event.candidate.candidate : '(null)'}
+        `);
+      }
+
+      pc.addEventListener('track', event => {
+        console.log('track', event);
+        remoteVideo.srcObject = event.streams[0];
+      });
+
+      await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      })
+        .then(gotStream)
+        .catch(e => {
+          alert(`getUserMedia() error: ${e.name}`);
+        });
+
+      function gotStream(stream) {
+        console.log('Received local stream', stream);
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          console.log(`Using audio device: ${audioTracks[0].label}`);
+        }
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      }
+
+      const handleError = (error) => {
+        console.error(error);
+      };
+
+      pc.createOffer().then(offer => {
+        return pc.setLocalDescription(offer);
+      }).then(() => {
+        const deviceId = deviceIdInput.value;
+        ws.send(JSON.stringify({ type: 'webRTCOffer', deviceId, offer: pc.localDescription }));
+      }).catch(handleError);
+
+      pc.onconnectionstatechange = (event) => {
+        console.log(event, pc.connectionState)
+      }
+
+      activePC = pc;
+    };   
+
+    connectWRTC.addEventListener('click', createWRTCConnection);
+    
+    disconnectWRTC.addEventListener('click', () => {
+      activePC.close();
+      activePC = null;
+    });
+
+    sendCommand.addEventListener('click', () => {
+      const deviceId = deviceIdInput.value;
+      ws.send(JSON.stringify({
+        type: 'command',
+        deviceId,
+        command: command.value,
+      }));
+      command.value = '';
+    });
+
+    const handleDeviceLog = (line) => {
+      deviceLog.value += line + '\n';
+      deviceLog.scrollTop = deviceLog.scrollHeight;
+    };
+
+    const handleAnswer = (answer) => {
+      console.log('handleAnswer', answer);
+      activePC.setRemoteDescription(answer);
+    };
+
+    const handleCandidate = (candidate) => {
+      console.log('handleCandidate', candidate);
+      activePC.addIceCandidate(candidate);
+    };
+
+    ws.addEventListener('message', async event => {
+      const message = JSON.parse(event.data);
+
+      switch (message.type) {
+        case 'deviceLog':
+          handleDeviceLog(message.content);
+          break;
+        case 'webRTCAnswer':
+          handleAnswer(message.answer);
+          break;
+        case 'ICECandidate':
+          handleCandidate(message.candidate);
+          break;
+        default:
+          console.error('Unknown message type:', message.type, message);
+          break;
+      }
+    });
+  
+  </script>
+</body>
+</html>
