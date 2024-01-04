@@ -12,7 +12,7 @@
     "dotenv": "^16.3.1",
     "node-record-lpcm16": "^1.0.1",
     "serialport-gsm": "^4.0.1",
-    "speaker": "^0.5.4",
+    "speaker": "https://github.com/euguuu/node-speaker/tarball/hack_for_linux_arm64_build",
     "wrtc": "^0.4.7",
     "ws": "^8.14.2"
   },
