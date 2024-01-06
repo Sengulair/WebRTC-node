@@ -1,53 +1,153 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Client</title>
+  <title>GSMProxy-Client</title>
   <style>
     body {
       display: flex;
       flex-direction: column;
       gap: 10px
     }
+
+    div {
+      border-width: 1px;
+      border-color: black;
+      border-style: dotted;
+    }
+
+    div>span {
+      background-color: #cbedff;
+      display: block;
+      padding: 10px;
+      font-weight: bold;
+      font-size: 14pt;
+    }
+
+    div>div {
+      border-style: none;
+      padding: 10px;
+    }
+
+    #deviceLog {
+      width:100%;
+      height: 100%;
+    }
+
+    button.nan {
+      color: red;
+    }
   </style>
 </head>
-<body>
-  <h1>Client</h1>
 
+<body>
   <video id="remoteVideo" autoplay style="width: 0;"></video>
   <div>
-    <label>Access token for user auth:<textarea id="accessToken" cols="30" rows="10"></textarea></label>
-    <input id="deviceId" type="text" placeholder="deviceId" />
-    <button id="authorize">Authorize</button>
+    <span>Auth</span>
+    <div>
+      <label>User Access Token: <input id="accessToken" type="text" placeholder="accessToken" /></label>
+      <label>Device ID: <input id="deviceId" type="text" placeholder="deviceId" /></label>
+      <button id="authorize">Authorize</button>
+    </div>
   </div>
 
   <div>
-    <button id="connectWRTC">Connect mic,speakers</button>
-    <button id="disconnectWRTC">Disonnect mic,speakers</button>
+    <span>Send Command</span>
+    <div>
+      <input id="command" placeholder="Command" type="text" />
+      <button id="sendCommand">Send command</button>
+      <button id="callAnswer">Answer Call</button>
+      <button id="callDrop">Drop Call</button>
+    </div>
   </div>
 
   <div>
-    <input id="command" placeholder="Command" type="text" />
-    <button id="sendCommand">Send command</button>
+    <span>Log / Messages from device</span>
+    <div>
+      <textarea id="deviceLog" cols="30" rows="10"></textarea>
+    </div>
   </div>
 
   <div>
-    <label>Log:<textarea id="deviceLog" cols="30" rows="10"></textarea></label>
+    <span>SMS Sender</span>
+    <div>
+      <input id="" placeholder="Recipient Phone Number" type="text" />
+      <input id="" placeholder="Message" type="text" />
+      <button class="nan" id="">Send SMS</button>
+    </div>
   </div>
-  
+
+  <div>
+    <span>USSD Request</span>
+    <div>
+      <input id="" placeholder="USSD Command" type="text" />
+      <button class="nan" id="">Send USSD</button>
+    </div>
+  </div>
+
+  <div>
+    <span>Settings</span>
+    <div>
+      <button class="nan" id="">List Audio</button>
+      <button class="nan" id="">List Modems</button>
+      <input id="" placeholder="Audio Value" type="text" />
+      <button class="nan" id="">Set Audio</button>
+      <input id="" placeholder="Modem Value" type="text" />
+      <button class="nan" id="">Set Modem</button>
+    </div>
+  </div>
+
+  <div>
+    <span>Etc</span>
+    <div>
+      <button id="sendPing">Send Ping</button>
+      <button id="connectWRTC">Connect mic,speakers</button>
+      <button id="disconnectWRTC">Disonnect mic,speakers</button>
+    </div>
+  </div>
+
   <script>
     const config = {
-      ws: 'ws://localhost:3000/user',
+      ws: 'ws://gsm-pr-lb8a1-3wall2xvzgtb-377183041.eu-central-1.elb.amazonaws.com/user',
     }
 
     let ws = new WebSocket(config.ws);
+
+    function send2WS(obj, skipDeviceId) {
+      if (!skipDeviceId) {
+        obj.deviceId = deviceIdInput.value;
+      }
+      ws.send(JSON.stringify(obj));
+    }
+
+    function keepAlive() {
+      send2WS({type: 'ping'});
+      setTimeout(keepAlive, 45000);
+    }
+
+    ws.addEventListener("open", (event) => {
+      console.log("The connection has been opened successfully.");
+      authorize.click();
+    });
+
+    ws.addEventListener("close", (event) => {
+      console.log("The connection has been closed successfully.");
+    });
+
+    ws.addEventListener("error", (event) => {
+      console.log("WebSocket error: ", event);
+    });
+
     const remoteVideo = document.getElementById('remoteVideo');
-    
+
     const deviceIdInput = document.getElementById('deviceId');
     const authorize = document.getElementById('authorize');
     const disconnectWRTC = document.getElementById('disconnectWRTC');
     const connectWRTC = document.getElementById('connectWRTC');
+    const callAnswer = document.getElementById('callAnswer');
+    const callDrop = document.getElementById('callDrop');
     const sendCommand = document.getElementById('sendCommand');
     const command = document.getElementById('command');
     const accessToken = document.getElementById('accessToken');
@@ -56,11 +156,27 @@
 
     let activePC = null;
 
+    const atok = localStorage.getItem("accessToken");
+    if (atok) {
+      accessToken.value = atok;
+    }
+    const devi = localStorage.getItem("deviceIdInput");
+    if (devi) {
+      deviceIdInput.value = devi;
+    }
+
     authorize.addEventListener('click', () => {
-      ws.send(JSON.stringify({ type: 'token', token: accessToken.value }));
+      if (!accessToken.value || !deviceIdInput.value) return;
+      send2WS({
+        type: 'token',
+        token: accessToken.value
+      }, true);
+      localStorage.setItem("accessToken", accessToken.value);
+      localStorage.setItem("deviceIdInput", deviceIdInput.value);
+      setTimeout(keepAlive, 45000);
     });
 
-    const createWRTCConnection = async () => {
+    const createWRTCConnection = async (callback) => {
       const pc = new RTCPeerConnection(null);
       pc.addEventListener('icecandidate', e => onIceCandidate(pc, e));
 
@@ -68,7 +184,10 @@
         console.log('onIceCandidate', event)
         const deviceId = deviceIdInput.value;
         if (event.candidate) {
-          ws.send(JSON.stringify({ type: 'ICECandidate', deviceId: deviceId, candidate: event.candidate }));
+          send2WS({
+            type: 'ICECandidate',
+            candidate: event.candidate
+          });
         }
         console.log(`ICE candidate:
           ${event.candidate ? event.candidate.candidate : '(null)'}
@@ -81,8 +200,8 @@
       });
 
       await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      })
+          audio: true,
+        })
         .then(gotStream)
         .catch(e => {
           alert(`getUserMedia() error: ${e.name}`);
@@ -104,8 +223,10 @@
       pc.createOffer().then(offer => {
         return pc.setLocalDescription(offer);
       }).then(() => {
-        const deviceId = deviceIdInput.value;
-        ws.send(JSON.stringify({ type: 'webRTCOffer', deviceId, offer: pc.localDescription }));
+        send2WS({
+          type: 'webRTCOffer',
+          offer: pc.localDescription
+        });
       }).catch(handleError);
 
       pc.onconnectionstatechange = (event) => {
@@ -113,23 +234,44 @@
       }
 
       activePC = pc;
-    };   
 
-    connectWRTC.addEventListener('click', createWRTCConnection);
-    
-    disconnectWRTC.addEventListener('click', () => {
+      callback();
+    };
+
+    const terminateRTC = async () => {
       activePC.close();
       activePC = null;
+    };
+
+    function sendCmdMessage(cmd) {
+      send2WS({
+        type: 'command',
+        command: cmd,
+      })
+    }
+
+    connectWRTC.addEventListener('click', createWRTCConnection);
+    disconnectWRTC.addEventListener('click', terminateRTC);
+
+    // Initiate RTC, and send message to take the phone
+    callAnswer.addEventListener('click', () => {
+      createWRTCConnection(()=>{sendCmdMessage('ATA')});
+    });
+
+    // Send message to drop call, and terminate RTC
+    callDrop.addEventListener('click', () => {
+      sendCmdMessage('ATH');
+      terminateRTC();
     });
 
     sendCommand.addEventListener('click', () => {
-      const deviceId = deviceIdInput.value;
-      ws.send(JSON.stringify({
-        type: 'command',
-        deviceId,
-        command: command.value,
-      }));
-      command.value = '';
+      sendCmdMessage(command.value);
+    });
+
+    sendPing.addEventListener('click', () => {
+      send2WS({
+        type: 'ping'
+      });
     });
 
     const handleDeviceLog = (line) => {
@@ -165,7 +307,7 @@
           break;
       }
     });
-  
   </script>
 </body>
+
 </html>
