@@ -32,7 +32,7 @@
     }
 
     #deviceLog {
-      width:100%;
+      width: 100%;
       height: 100%;
     }
 
@@ -115,15 +115,32 @@
 
     let ws = new WebSocket(config.ws);
 
-    function send2WS(obj, skipDeviceId) {
+    function makeid(length) {
+      let result = '';
+      const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      const charactersLength = characters.length;
+      let counter = 0;
+      while (counter < length) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+        counter += 1;
+      }
+      return result;
+    }
+
+    function send2WS(obj, skipDeviceId, skipTag) {
       if (!skipDeviceId) {
         obj.deviceId = deviceIdInput.value;
+      }
+      if (!skipTag) {
+        obj.tag = makeid(5);
       }
       ws.send(JSON.stringify(obj));
     }
 
     function keepAlive() {
-      send2WS({type: 'ping'});
+      send2WS({
+        type: 'ping'
+      }, false, true);
       setTimeout(keepAlive, 45000);
     }
 
@@ -245,8 +262,8 @@
 
     function sendCmdMessage(cmd) {
       send2WS({
-        type: 'command',
-        command: cmd,
+        type: 'cmd',
+        data: cmd
       })
     }
 
@@ -255,7 +272,9 @@
 
     // Initiate RTC, and send message to take the phone
     callAnswer.addEventListener('click', () => {
-      createWRTCConnection(()=>{sendCmdMessage('ATA')});
+      createWRTCConnection(() => {
+        sendCmdMessage('ATA')
+      });
     });
 
     // Send message to drop call, and terminate RTC
@@ -271,7 +290,7 @@
     sendPing.addEventListener('click', () => {
       send2WS({
         type: 'ping'
-      });
+      }, false, true);
     });
 
     const handleDeviceLog = (line) => {
@@ -294,7 +313,10 @@
 
       switch (message.type) {
         case 'deviceLog':
-          handleDeviceLog(message.content);
+        case 'device':
+        case 'device-answer':
+          //handleDeviceLog(message.data);
+          handleDeviceLog(JSON.stringify(message));
           break;
         case 'webRTCAnswer':
           handleAnswer(message.answer);

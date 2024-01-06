@@ -1,64 +1,176 @@
-const { Transform, Readable } = require('node:stream');
+const {
+  Transform,
+  Readable
+} = require('node:stream');
+
+const dotenv = require('dotenv');
 
 const WebSocket = require('ws');
-const { RTCPeerConnection, nonstandard, MediaStream } = require('wrtc');
-const dotenv = require('dotenv');
+const serialportgsm = require('serialport-gsm');
+const {
+  RTCPeerConnection,
+  nonstandard,
+  MediaStream
+} = require('wrtc');
 const recorder = require('node-record-lpcm16');
 const Speaker = require('speaker');
-const serialportgsm = require('serialport-gsm')
+
+/**
+ * @param {Int16Array} samples
+ * @returns Buffer
+ */
+const resempleMonoToStereo = (samples) => {
+  const monoBuffer = Buffer.from(samples.buffer);
+  const stereoBuffer = Buffer.alloc(monoBuffer.length * 2);
+
+  for (let i = 0; i < monoBuffer.length / 2; i++) {
+    const sample = monoBuffer.readUInt16LE(i * 2);
+    stereoBuffer.writeUInt16LE(sample, i * 4);
+    stereoBuffer.writeUInt16LE(sample, i * 4 + 2);
+  }
+
+  return stereoBuffer;
+}
 
 dotenv.config();
 
-console.log(process.env.EXCHANGE_SERVER_WEBSOCKET_URL);
+var gsmModem;
+// -----------------------------------------------------------------------------
 
-const ws = new WebSocket(process.env.EXCHANGE_SERVER_WEBSOCKET_URL);
-let tokenSended = false;
-
-var gsmModem = serialportgsm.Modem()
-let options = {
-  baudRate: 19200,
-  dataBits: 8,
-  parity: 'none',
-  stopBits: 1,
-  xon: false,
-  rtscts: false,
-  xoff: false,
-  xany: false,
-  autoDeleteOnReceive: true,
-  enableConcatenation: true,
-  incomingCallIndication: true,
-  incomingSMSIndication: true,
-  pin: '',
-  customInitCommand: 'AT^CURC=0',
-  cnmiCommand:'AT+CNMI=2,1,0,2,1',
-
-  logger: {
-    debug: (text) => {
-      if (ws.readyState === ws.OPEN && tokenSended) {
-        console.log(JSON.stringify({ type: 'deviceLog', content: text }));
-        ws.send(JSON.stringify({ type: 'deviceLog', content: text }))
-      }
-    }
-  }
+function debugLog(message) {
+  console.log(message)
 }
 
-gsmModem.on('open', () => {
-  console.log(`Modem Sucessfully Opened`);
+function send2exs(obj, callback) {
+  ws.send(JSON.stringify(obj), callback);
+}
 
-  gsmModem.initializeModem((msg, err) => {
-    if (err) {
-      console.log(`Error Initializing Modem - ${err}`);
-    } else {
-      console.log(`InitModemResponse: ${JSON.stringify(msg)}`);
-    }
-  });
+function send2exs_status(data, callback) {
+  send2exs({type:'device', data: data}, callback);
+}
 
-  gsmModem.on('close', data => {
-    console.log(`Event Close: ` + JSON.stringify(data));
+// -----------------------------------------------------------------------------
+
+debugLog('Exchange Server - Connecting `' + process.env.EXCHANGE_SERVER_WEBSOCKET_URL + '`...');
+const ws = new WebSocket(process.env.EXCHANGE_SERVER_WEBSOCKET_URL);
+ws.addEventListener('open', () => {
+  debugLog('Exchange Server - Connected');
+  debugLog('Exchange Server - Sending token...');
+  send2exs({
+    type: 'token',
+    token: process.env.TOKEN
+  }, () => {
+    debugLog('Exchange Server - Token Sent');
+    send2exs_status({code: 'START'}, () => {
+      connectModem();
+    })
   });
 });
 
-gsmModem.open(process.env.SERIALPORT_PATH, options);
+ws.addEventListener('close', (code, reason) => {
+  debugLog('Exchange Server - Disconnected with code' + code);
+  debugLog(reason);
+  send2exs_status({code: 'STOP', num: code});
+});
+
+async function* handleOffer(offer) {
+  debugLog('--handleOffer');
+  debugLog(offer);
+  await pc.setRemoteDescription(offer);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  send2exs({
+    type: 'webRTCAnswer',
+    answer: pc.localDescription
+  });
+}
+
+async function* handleCandidate(candidate) {
+  if (!candidate || !candidate.candidate) return;
+  debugLog('--handleCandidate');
+  debugLog(candidate);
+  await pc.addIceCandidate(candidate);
+};
+
+function handleCommandExecution(message) {
+  const command = message.data;
+  gsmModem.executeCommand(command, (result, err) => {
+    var rslt = {};
+    if (err) {
+      rslt.error = err;
+    } else {
+      rslt.success = true;
+      rslt.tag = message.tag;
+      rslt.data = result.data;
+    }
+    ws.send(JSON.stringify({
+      type: 'device-answer',
+      content: JSON.stringify(rslt)
+    }))
+  });
+}
+
+ws.addEventListener('message', async (event) => {
+  var message = null;
+  try {
+    message = JSON.parse(event.data);
+    if (!message.type) {
+      throw "Message type not found";
+    }
+  } catch (e) {
+    debugLog('ERROR: ' + e + ' when parsing message (' + JSON.stringify(event) + ')');
+    return;
+  }
+  debugLog(message);
+
+  try {
+    switch (message.type) {
+      case 'webRTCOffer':
+        handleOffer(message.offer);
+        break;
+      case 'ICECandidate':
+        handleCandidate(message.candidate);
+        break;
+      case 'cmd':
+        handleCommandExecution(message);
+        break;
+      case 'ping':
+        // Ignore and skip;
+        break;
+      default:
+        debugLog('Unknown message type: ' + message.type);
+        break;
+    }
+  } catch (e) {
+    debugLog('ERROR: ' + e + ' when executing message.');
+  }
+});
+
+// -----------------------------------------------------------------------------
+
+function connectModem() {
+  debugLog(`Modem - Connecting...`);
+  gsmModem = serialportgsm.Modem()
+
+  gsmModem.on('open', () => {
+    debugLog(`Modem - Connected`);
+
+    gsmModem.on('close', data => {
+      debugLog(`Modem - Disconnected : ` + JSON.stringify(data));
+    });
+  });
+
+  gsmModem.open(process.env.SERIALPORT_PATH, {
+    baudRate: 115200,
+    logger: {
+      debug: (text) => {
+        debugLog(text);
+      }
+    }
+  });
+}
+
+// -----------------------------------------------------------------------------
 
 const audioConfig = {
   sampleRate: 48000,
@@ -74,13 +186,13 @@ const recording = recorder.record({
   recorder: 'sox',
   sampleRate: audioConfig.sampleRate,
   channels: audioConfig.channels,
-  device: `plughw:${AUDIOCARD_INDEX}`,
+  device: 'plughw:CARD=Device,DEV=0', //`plughw:${AUDIOCARD_INDEX}`,
 })
 const speaker = new Speaker({
   channels: 2,
   bitDepth: audioConfig.bitDepth,
   sampleRate: audioConfig.sampleRate,
-  device: `hw:${AUDIOCARD_INDEX},0`,
+  device: 'plughw:CARD=Device,DEV=0', //`hw:${AUDIOCARD_INDEX},0`,
 });
 
 const recordingStream = recording.stream();
@@ -95,13 +207,13 @@ function createChunker(size) {
     transform(chunk, encoding, callback) {
       buffers.push(chunk);
       length += chunk.length;
-  
+
       if (length >= size) {
         const all = Buffer.concat(buffers);
         for (let i = 0; i <= all.length - size; i += size) {
           this.push(all.subarray(i, i + size));
         }
-  
+
         const rest = all.subarray(Math.floor(length / size) * size);
         buffers = [rest];
         length = rest.length;
@@ -134,24 +246,7 @@ audioChunker.on('data', (data) => {
 
 pc.addTrack(audioTrack, audioStream);
 
-/**
- * @param {Int16Array} samples 
- * @returns Buffer
- */
-const resempleMonoToStereo = (samples) => {
-  const monoBuffer = Buffer.from(samples.buffer);
-  const stereoBuffer = Buffer.alloc(monoBuffer.length * 2);
-
-  for (let i = 0; i < monoBuffer.length / 2; i++) {
-    const sample = monoBuffer.readUInt16LE(i * 2);
-    stereoBuffer.writeUInt16LE(sample, i * 4);
-    stereoBuffer.writeUInt16LE(sample, i * 4 + 2);
-  }
-
-  return stereoBuffer;
-}
-
-pc.ontrack = function (event) {
+pc.ontrack = function(event) {
   if (event.track.kind === 'audio') {
     const audioTrack = event.track;
 
@@ -171,56 +266,10 @@ pc.ontrack = function (event) {
   }
 }
 
-ws.addEventListener('open', function open() {
-  console.log('exchange server connected');
-  ws.send(JSON.stringify({ type: 'token', token: process.env.TOKEN }));
-  tokenSended = true;
-});
-
-const handleOffer = async offer => {
-  console.log('handleOffer', offer);
-  await pc.setRemoteDescription(offer);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  ws.send(JSON.stringify({ type: 'webRTCAnswer', answer: pc.localDescription }));
-};
-
-const handleCandidate = async candidate => {
-  console.log('handleCandidate', candidate);
-  await pc.addIceCandidate(candidate);
-};
-
-const handleCommand = (command) => {
-  gsmModem.executeCommand(command, (result, err) => {
-    const commandResult = err ? `Error - ${err}` : `Result ${JSON.stringify(result)}`
-    ws.send(JSON.stringify({ type: 'deviceLog', content: commandResult }))
-  });
-}
-
-ws.addEventListener('message', async (event) => {
-  const messageText = event.data;
-  const message = JSON.parse(messageText);
-
-  console.log(message);
-
-  switch (message.type) {
-    case 'webRTCOffer':
-      handleOffer(message.offer);
-      break;
-    case 'ICECandidate':
-      handleCandidate(message.candidate);
-      break;
-    case 'command':
-      handleCommand(message.command);
-      break;
-    default:
-      console.error('Unknown message type:', message.type);
-      break;
-  }
-});
-
 pc.onicecandidate = (event) => {
-  if (event.candidate) {
-    ws.send(JSON.stringify({ type: 'ICECandidate', candidate: event.candidate }));
-  }
+  if (!event.candidate) return;
+  send2exs({
+    type: 'ICECandidate',
+    candidate: event.candidate
+  });
 };
