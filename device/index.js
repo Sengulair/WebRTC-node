@@ -7,6 +7,7 @@ const dotenv = require('dotenv');
 
 const WebSocket = require('ws');
 const serialportgsm = require('serialport-gsm');
+const ussd = require('./ussd.js')
 const {
   RTCPeerConnection,
   nonstandard,
@@ -96,12 +97,49 @@ function handleCommandExecution(message) {
   const command = message.data;
   gsmModem.executeCommand(command, (result, err) => {
     var rslt = {};
-    if (err) {
+    if (err && Object.keys(err).length > 0) {
       rslt.error = err;
     } else {
       rslt.success = true;
       rslt.tag = message.tag;
       rslt.data = result.data;
+    }
+    ws.send(JSON.stringify({
+      type: 'device-answer',
+      content: JSON.stringify(rslt)
+    }))
+  });
+}
+
+function handleSMSExecution(smsMessage) {
+  const number = smsMessage.data.number;
+  const message = smsMessage.data.message;
+  gsmModem.sendSMS(number, message, false, (result, err) => {
+    var rslt = {};
+    if (err && Object.keys(err).length > 0) {
+      rslt.error = err;
+    } else {
+      rslt.success = true;
+      rslt.tag = smsMessage.tag;
+      rslt.data = result.data;
+    }
+    ws.send(JSON.stringify({
+      type: 'device-answer',
+      content: JSON.stringify(rslt)
+    }))
+  });
+}
+
+function handleUSSDExecution(message) {
+  const command = message.data;
+  gsmModem.sendUSSD(command, (result, err) => {
+    var rslt = {};
+    if (err && Object.keys(err).length > 0) {
+      rslt.error = err;
+    } else {
+      rslt.success = true;
+      rslt.tag = message.tag;
+      rslt.data = result;
     }
     ws.send(JSON.stringify({
       type: 'device-answer',
@@ -134,6 +172,12 @@ ws.addEventListener('message', async (event) => {
       case 'cmd':
         handleCommandExecution(message);
         break;
+      case 'sms':
+        handleSMSExecution(message);
+        break;
+      case 'ussd':
+        handleUSSDExecution(message);
+        break;
       case 'ping':
         // Ignore and skip;
         break;
@@ -150,18 +194,43 @@ ws.addEventListener('message', async (event) => {
 
 function connectModem() {
   debugLog(`Modem - Connecting...`);
-  gsmModem = serialportgsm.Modem()
+  gsmModem = serialportgsm.Modem();
+  ussd(gsmModem);
 
   gsmModem.on('open', () => {
     debugLog(`Modem - Connected`);
 
+    gsmModem.on('error', data => {
+      debugLog(`Modem - Error : ` + JSON.stringify(data));
+    });
+
     gsmModem.on('close', data => {
       debugLog(`Modem - Disconnected : ` + JSON.stringify(data));
+    });
+
+    gsmModem.on('onNewIncomingCall', result => {
+      send2exs({type: 'call', data: result.data});
+    });
+
+    gsmModem.on('onNewMessageIndicator', result => {
+      send2exs({type: 'sms', data: result.data});
+    });
+
+    gsmModem.on('onNewIncomingUSSD', result => {
+      send2exs({type: 'ussd', data: result.data});
+    });
+
+    debugLog(`Modem - Initializing...`);
+    gsmModem.initializeModem(() => {
+      debugLog(`Modem - Initialized`);
     });
   });
 
   gsmModem.open(process.env.SERIALPORT_PATH, {
     baudRate: 115200,
+    incomingCallIndication: true,
+    incomingSMSIndication: true,
+    customInitCommand: " ",
     logger: {
       debug: (text) => {
         debugLog(text);

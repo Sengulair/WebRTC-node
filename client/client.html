@@ -73,17 +73,17 @@
   <div>
     <span>SMS Sender</span>
     <div>
-      <input id="" placeholder="Recipient Phone Number" type="text" />
-      <input id="" placeholder="Message" type="text" />
-      <button class="nan" id="">Send SMS</button>
+      <input id="smsNumber" placeholder="Recipient Phone Number" type="text" />
+      <textarea id="smsMessage" cols="50" rows="2">Message</textarea>
+      <button id="smsButton">Send SMS</button>
     </div>
   </div>
 
   <div>
     <span>USSD Request</span>
     <div>
-      <input id="" placeholder="USSD Command" type="text" />
-      <button class="nan" id="">Send USSD</button>
+      <input id="ussdText" placeholder="USSD Command" type="text" />
+      <button id="ussdButton">Send USSD</button>
     </div>
   </div>
 
@@ -170,6 +170,11 @@
     const accessToken = document.getElementById('accessToken');
     const deviceLog = document.getElementById('deviceLog');
     const deviceId = document.getElementById('deviceId');
+    const smsButton = document.getElementById('smsButton');
+    const smsNumber = document.getElementById('smsNumber');
+    const smsMessage = document.getElementById('smsMessage');
+    const ussdButton = document.getElementById('ussdButton');
+    const ussdText = document.getElementById('ussdText');
 
     let activePC = null;
 
@@ -287,6 +292,20 @@
       sendCmdMessage(command.value);
     });
 
+    smsButton.addEventListener('click', () => {
+      send2WS({
+        type: 'sms',
+        data: {number: smsNumber.value, message: smsMessage.value}
+      });
+    });
+
+    ussdButton.addEventListener('click', () => {
+      send2WS({
+        type: 'ussd',
+        data: ussdText.value
+      });
+    });
+
     sendPing.addEventListener('click', () => {
       send2WS({
         type: 'ping'
@@ -315,6 +334,9 @@
         case 'deviceLog':
         case 'device':
         case 'device-answer':
+        case 'call':
+        case 'sms':
+        case 'ussd':
           //handleDeviceLog(message.data);
           handleDeviceLog(JSON.stringify(message));
           break;
