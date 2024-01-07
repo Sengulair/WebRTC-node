@@ -108,6 +108,15 @@
     </div>
   </div>
 
+  <div>
+    <span>Debug</span>
+    <div>
+      <input id="debugType" placeholder="Type" type="text" />
+      <input id="debugJson" placeholder="JSON" type="text" />
+      <button id="sendDebug">Send</button>
+    </div>
+  </div>
+
   <script>
     const config = {
       ws: 'ws://gsm-pr-lb8a1-3wall2xvzgtb-377183041.eu-central-1.elb.amazonaws.com/user',
@@ -175,6 +184,9 @@
     const smsMessage = document.getElementById('smsMessage');
     const ussdButton = document.getElementById('ussdButton');
     const ussdText = document.getElementById('ussdText');
+    const debugType = document.getElementById('debugType');
+    const debugJson = document.getElementById('debugJson');
+    const sendDebug = document.getElementById('sendDebug');
 
     let activePC = null;
 
@@ -310,6 +322,13 @@
       send2WS({
         type: 'ping'
       }, false, true);
+    });
+
+    sendDebug.addEventListener('click', () => {
+      send2WS({
+        type: debugType.value,
+        data: JSON.parse(debugJson.value)
+      });
     });
 
     const handleDeviceLog = (line) => {
