@@ -20,9 +20,8 @@ const fastify = Fastify({ logger: false });
 const dataStore = new Map();
 const clients = new Map();
 
-fastify.register(rateLimit, {
-  max: 5, // limit each IP to 5 requests per windowMs
-  timeWindow: '1 minute',
+await fastify.register(rateLimit, {
+  global: false,
 });
 
 fastify.register(fastifyStatic, {
@@ -56,7 +55,14 @@ fastify.post('/api/data', async (req, reply) => {
   return { message: 'Data added successfully' };
 });
 
-fastify.get('/api/data/:code', async (req, reply) => {
+fastify.get('/api/data/:code', {
+  config: {
+    rateLimit: {
+      max: 5,
+      timeWindow: '1m',
+    },
+  },
+}, async (req, reply) => {
   const code = req.params.code;
   const data = dataStore.get(code);
 
