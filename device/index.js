@@ -1,13 +1,18 @@
+const GsmProxy = require('./gsm-proxy');
+const gsmDevice = new GsmProxy();
+process.on('SIGINT', function() {
+  gsmDevice.destruct();
+});
+gsmDevice.init();//.then( () => console.log(gsmDevice.getId()));
+
+/*
+process.exit(0);
 const {
   Transform,
   Readable
 } = require('node:stream');
 
-const dotenv = require('dotenv');
 
-const WebSocket = require('ws');
-const serialportgsm = require('serialport-gsm');
-const ussd = require('./ussd.js')
 const {
   RTCPeerConnection,
   nonstandard,
@@ -16,10 +21,6 @@ const {
 const recorder = require('node-record-lpcm16');
 const Speaker = require('speaker');
 
-/**
- * @param {Int16Array} samples
- * @returns Buffer
- */
 const resempleMonoToStereo = (samples) => {
   const monoBuffer = Buffer.from(samples.buffer);
   const stereoBuffer = Buffer.alloc(monoBuffer.length * 2);
@@ -32,47 +33,6 @@ const resempleMonoToStereo = (samples) => {
 
   return stereoBuffer;
 }
-
-dotenv.config();
-
-var gsmModem;
-// -----------------------------------------------------------------------------
-
-function debugLog(message) {
-  console.log(message)
-}
-
-function send2exs(obj, callback) {
-  ws.send(JSON.stringify(obj), callback);
-}
-
-function send2exs_status(data, callback) {
-  send2exs({type:'device', data: data}, callback);
-}
-
-// -----------------------------------------------------------------------------
-
-debugLog('Exchange Server - Connecting `' + process.env.EXCHANGE_SERVER_WEBSOCKET_URL + '`...');
-const ws = new WebSocket(process.env.EXCHANGE_SERVER_WEBSOCKET_URL);
-ws.addEventListener('open', () => {
-  debugLog('Exchange Server - Connected');
-  debugLog('Exchange Server - Sending token...');
-  send2exs({
-    type: 'token',
-    token: process.env.TOKEN
-  }, () => {
-    debugLog('Exchange Server - Token Sent');
-    send2exs_status({code: 'START'}, () => {
-      connectModem();
-    })
-  });
-});
-
-ws.addEventListener('close', (code, reason) => {
-  debugLog('Exchange Server - Disconnected with code' + code);
-  debugLog(reason);
-  send2exs_status({code: 'STOP', num: code});
-});
 
 async function* handleOffer(offer) {
   debugLog('--handleOffer');
@@ -92,154 +52,6 @@ async function* handleCandidate(candidate) {
   debugLog(candidate);
   await pc.addIceCandidate(candidate);
 };
-
-function handleCommandExecution(message) {
-  const command = message.data;
-  gsmModem.executeCommand(command, (result, err) => {
-    var rslt = {};
-    if (err && Object.keys(err).length > 0) {
-      rslt.error = err;
-    } else {
-      rslt.success = true;
-      rslt.tag = message.tag;
-      rslt.data = result.data;
-    }
-    ws.send(JSON.stringify({
-      type: 'device-answer',
-      content: JSON.stringify(rslt)
-    }))
-  });
-}
-
-function handleSMSExecution(smsMessage) {
-  const number = smsMessage.data.number;
-  const message = smsMessage.data.message;
-  gsmModem.sendSMS(number, message, false, (result, err) => {
-    var rslt = {};
-    if (err && Object.keys(err).length > 0) {
-      rslt.error = err;
-    } else {
-      rslt.success = true;
-      rslt.tag = smsMessage.tag;
-      rslt.data = result.data;
-    }
-    ws.send(JSON.stringify({
-      type: 'device-answer',
-      content: JSON.stringify(rslt)
-    }))
-  });
-}
-
-function handleUSSDExecution(message) {
-  const command = message.data;
-  gsmModem.sendUSSD(command, (result, err) => {
-    var rslt = {};
-    if (err && Object.keys(err).length > 0) {
-      rslt.error = err;
-    } else {
-      rslt.success = true;
-      rslt.tag = message.tag;
-      rslt.data = result;
-    }
-    ws.send(JSON.stringify({
-      type: 'device-answer',
-      content: JSON.stringify(rslt)
-    }))
-  });
-}
-
-ws.addEventListener('message', async (event) => {
-  var message = null;
-  try {
-    message = JSON.parse(event.data);
-    if (!message.type) {
-      throw "Message type not found";
-    }
-  } catch (e) {
-    debugLog('ERROR: ' + e + ' when parsing message (' + JSON.stringify(event) + ')');
-    return;
-  }
-  debugLog(message);
-
-  try {
-    switch (message.type) {
-      case 'webRTCOffer':
-        handleOffer(message.offer);
-        break;
-      case 'ICECandidate':
-        handleCandidate(message.candidate);
-        break;
-      case 'cmd':
-        handleCommandExecution(message);
-        break;
-      case 'sms':
-        handleSMSExecution(message);
-        break;
-      case 'ussd':
-        handleUSSDExecution(message);
-        break;
-      case 'ping':
-        // Ignore and skip;
-        break;
-      default:
-        debugLog('Unknown message type: ' + message.type);
-        break;
-    }
-  } catch (e) {
-    debugLog('ERROR: ' + e + ' when executing message.');
-  }
-});
-
-// -----------------------------------------------------------------------------
-
-function connectModem() {
-  debugLog(`Modem - Connecting...`);
-  gsmModem = serialportgsm.Modem();
-  ussd(gsmModem);
-
-  gsmModem.on('open', () => {
-    debugLog(`Modem - Connected`);
-
-    gsmModem.on('error', data => {
-      debugLog(`Modem - Error : ` + JSON.stringify(data));
-    });
-
-    gsmModem.on('close', data => {
-      debugLog(`Modem - Disconnected : ` + JSON.stringify(data));
-    });
-
-    gsmModem.on('onNewIncomingCall', result => {
-      send2exs({type: 'call', data: result.data});
-    });
-
-    gsmModem.on('onNewMessageIndicator', result => {
-      send2exs({type: 'sms', data: result.data});
-    });
-
-    gsmModem.on('onNewIncomingUSSD', result => {
-      send2exs({type: 'ussd', data: result.data});
-    });
-
-    debugLog(`Modem - Initializing...`);
-    gsmModem.initializeModem(() => {
-      debugLog(`Modem - Initialized`);
-    });
-  });
-
-  gsmModem.open(process.env.SERIALPORT_PATH, {
-    baudRate: 115200,
-    incomingCallIndication: true,
-    incomingSMSIndication: true,
-    customInitCommand: " ",
-    logger: {
-      debug: (text) => {
-        debugLog(text);
-      }
-    }
-  });
-}
-
-// -----------------------------------------------------------------------------
 
 const audioConfig = {
   sampleRate: 48000,
@@ -342,3 +154,4 @@ pc.onicecandidate = (event) => {
     candidate: event.candidate
   });
 };
+*/
