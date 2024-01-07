@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Remove package in 18+ node version
+import fetch from 'node-fetch';
 
 import dotenv from 'dotenv';
 import Fastify from 'fastify';
