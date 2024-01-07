@@ -331,15 +331,6 @@
       const message = JSON.parse(event.data);
 
       switch (message.type) {
-        case 'deviceLog':
-        case 'device':
-        case 'device-answer':
-        case 'call':
-        case 'sms':
-        case 'ussd':
-          //handleDeviceLog(message.data);
-          handleDeviceLog(JSON.stringify(message));
-          break;
         case 'webRTCAnswer':
           handleAnswer(message.answer);
           break;
@@ -347,7 +338,7 @@
           handleCandidate(message.candidate);
           break;
         default:
-          console.error('Unknown message type:', message.type, message);
+          handleDeviceLog(JSON.stringify(message));
           break;
       }
     });
