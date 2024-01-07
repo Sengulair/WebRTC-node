@@ -15,7 +15,30 @@ const modemSettings = {
     customInitCommand: " ",
 };
 const priorityOfModemAutomaticConnection = ["ttyS0", "ttyAMA0"];
-//const priorityOfModemAutomaticConnection = ["ttyAMA0", "ttyS0"];
+
+const markersForAudioInDefault = [
+    { details: /USB Audio.*with all software conversions?/ },
+];
+const markersForAudioInIgnore = [
+    { device: "dmix" },
+    { device: "iec958" },
+    { device: "surround" },
+    { device: "front" },
+    { device: "hdmi" },
+    { device: "null" },
+];
+const markersForAudioOutDefault = [
+    { details: /USB Audio.*with all software conversions?/ },
+];
+const markersForAudioOutIgnore = [
+    { device: "dmix" },
+    { device: "iec958" },
+    { device: "surround" },
+    { device: "front" },
+    { device: "hdmi" },
+    { device: "null" },
+    { device: "dsnoop" },
+];
 
 // Libraries
 const { execSync } = require("child_process");
@@ -28,13 +51,13 @@ const axios = require("axios");
 const WebSocket = require("ws");
 const serialportgsm = require("serialport-gsm");
 const ussd = require("./lib/serialport-gsm-ussd.js");
+const RtcHandler = require("./lib/rtc-handler.js");
 
 class GsmProxy {
-    ws = null;
-
     constructor() {
         this.isRunning = true;
         this.ws = null;
+        this.rtc = null;
         this.arrayOfPastTries = [];
         this.config = new Preferences(identifier);
         this.logger = this.#createLogger();
@@ -46,6 +69,10 @@ class GsmProxy {
     // This is one of the main functions it is triggered, when modem has some event
     async onModemEvent(type, data) {
         this.#wsSend({ type: `m-${type}`, data: data });
+    }
+
+    async onRtcEvent(type, data) {
+        this.#wsSend({ type: `rtc-${type}`, data: data });
     }
 
     // This is one of the main functions it is triggered, when user or cloud send some event to device
@@ -181,33 +208,32 @@ class GsmProxy {
         } catch (error) {
             this.logger.error(error);
         }
-        return;
-        try {
-            switch (message.type) {
-                case "webRTCOffer":
-                    handleOffer(message.offer);
-                    break;
-                case "ICECandidate":
-                    handleCandidate(message.candidate);
-                    break;
-                case "cmd":
-                    handleCommandExecution(message);
-                    break;
-                case "sms":
-                    handleSMSExecution(message);
-                    break;
-                case "ussd":
-                    handleUSSDExecution(message);
-                    break;
-                case "ping":
-                    // Ignore and skip;
-                    break;
-                default:
-                    debugLog("Unknown message type: " + message.type);
-                    break;
-            }
-        } catch (e) {
-            debugLog("ERROR: " + e + " when executing message.");
+    }
+
+    async rtcStart(offer) {
+        if (this.rtc) {
+            this.rtcEnd();
+        }
+        this.rtc = new RtcHandler(
+            this.#getAudioOut(),
+            this.#getAudioIn(),
+            (type, data) => {
+                this.onRtcEvent(type, data);
+            },
+            this.log()
+        );
+        
+        await this.onRtcEvent("answer", await this.rtc.offer(offer));
+    }
+
+    async rtcAddIceCandidate(candidate) {
+        this.rtc.addIceCandidate(candidate);
+    }
+
+    rtcEnd() {
+        if (this.rtc) {
+            this.rtc.close();
+            this.rtc = null;
         }
     }
 
@@ -215,8 +241,7 @@ class GsmProxy {
         const modemPath = this.#getModemPath();
         if (!modemPath) {
             this.logger.error(`No available modem found`);
-            if (callback)
-                callback(false);
+            if (callback) callback(false);
             return;
         }
         const self = this;
@@ -225,6 +250,10 @@ class GsmProxy {
             logger: {
                 debug: (text) => {
                     self.logger.silly(text);
+                    if (self.rtc && (text.indexOf("NO CARRIER")>=0||text.indexOf("+DISC:")>=0||text.indexOf("+HANGUP:")>=0)) {
+                        self.onModemEvent('call-end', 'The call hung up');
+                        self.rtcEnd();
+                    }
                 },
             },
         };
@@ -237,7 +266,11 @@ class GsmProxy {
                 self.#connectModem(callback);
             } else {
                 self.gsmModem.executeCommand("AT", (result, err) => {
-                    if ((err && Object.keys(err).length > 0)||(!result || result.status != 'success')) {
+                    if (
+                        (err && Object.keys(err).length > 0) ||
+                        !result ||
+                        result.status != "success"
+                    ) {
                         self.logger.debug(error);
                         self.arrayOfPastTries.push(modemPath);
                         self.#connectModem(callback);
@@ -250,8 +283,7 @@ class GsmProxy {
                         self.gsmModem.initializeModem(() => {
                             self.logger.debug(`Modem - Initialized`);
                         });
-                        if (callback)
-                            callback(true);
+                        if (callback) callback(true);
                     }
                 });
             }
@@ -259,11 +291,17 @@ class GsmProxy {
     }
 
     #getModemPath() {
-        if (!alwaysPerformModemSelection && (this.arrayOfPastTries.length == 0) && this.config.modemPath) {
-            this.logger.silly('Read modem path from config: '+this.config.modemPath);
+        if (
+            !alwaysPerformModemSelection &&
+            this.arrayOfPastTries.length == 0 &&
+            this.config.modemPath
+        ) {
+            this.logger.silly(
+                "Read modem path from config: " + this.config.modemPath
+            );
             return this.config.modemPath;
         }
-        this.logger.silly('Guessing modem path...');
+        this.logger.silly("Guessing modem path...");
         const bestModem = this.#findBestDeviceForModem();
         if (!bestModem) return null;
         return "/dev/" + bestModem;
@@ -416,6 +454,117 @@ class GsmProxy {
         this.logger.debug(this.modemsList);
     }
 
+    static #includeDevice(device, markersForDefault, markersForIgnore) {
+        if (!device) return null;
+        // Scan should we skip the device
+        for (let i = 0; i < markersForIgnore.length; i++) {
+            const marker = markersForIgnore[i];
+            if (marker.device) {
+                if (device.device.indexOf(marker.device) >= 0) {
+                    if (marker.details) {
+                        if (device.details.indexOf(marker.details) >= 0) {
+                            return null;
+                        }
+                    } else {
+                        return null;
+                    }
+                }
+            } else {
+                if (marker.details) {
+                    if (device.details.indexOf(marker.details) >= 0) {
+                        return null;
+                    }
+                }
+            }
+        }
+        // Scan for default
+        for (let i = 0; i < markersForDefault.length; i++) {
+            const marker = markersForDefault[i];
+            if (marker.device) {
+                if (marker.device.test(device.device)) {
+                    if (marker.details) {
+                        if (marker.details.test(device.details)) {
+                            device.isDefault = true;
+                        }
+                    } else {
+                        device.isDefault = true;
+                    }
+                }
+            } else {
+                if (marker.details) {
+                    if (marker.details.test(device.details)) {
+                        device.isDefault = true;
+                    }
+                }
+            }
+        }
+        return device;
+    }
+
+    static #parseAudioOutput(output, markersForDefault, markersForIgnore) {
+        const lines = output.split("\n");
+        const devices = [];
+        let currentDevice = null;
+
+        lines.forEach((line) => {
+            if (line.startsWith(" ")) {
+                // Continuation of the details of the current device
+                if (currentDevice) {
+                    currentDevice.details += line.trim() + " ";
+                }
+            } else if (line.length > 0) {
+                currentDevice = GsmProxy.#includeDevice(
+                    currentDevice,
+                    markersForDefault,
+                    markersForIgnore
+                );
+                if (currentDevice) {
+                    devices.push(currentDevice);
+                }
+                currentDevice = { device: line.trim(), details: "" };
+            }
+        });
+
+        currentDevice = GsmProxy.#includeDevice(
+            currentDevice,
+            markersForDefault,
+            markersForIgnore
+        );
+        if (currentDevice) {
+            devices.push(currentDevice);
+        }
+
+        return devices;
+    }
+
+    #retrieveAudioInputs() {
+        try {
+            const output = execSync("arecord -L").toString();
+            this.audioInDevices = GsmProxy.#parseAudioOutput(
+                output,
+                markersForAudioInDefault,
+                markersForAudioInIgnore
+            );
+            this.logger.silly(this.audioInDevices);
+        } catch (error) {
+            this.logger.error("Failed to execute arecord:", error);
+        }
+    }
+
+    #retrieveAudioOutputs() {
+        try {
+            const output = execSync("aplay -L").toString();
+            this.audioOutDevices = GsmProxy.#parseAudioOutput(
+                output,
+                markersForAudioOutDefault,
+                markersForAudioOutIgnore
+            );
+            this.logger.silly(this.audioOutDevices);
+        } catch (error) {
+            this.logger.error("Failed to execute aplay:", error);
+        }
+    }
+
     async #retrieveTryDevicePrimaryConfig() {
         if (!alwaysPerformOnboarding && this.config.server && this.config.token)
             return;
@@ -467,6 +616,8 @@ class GsmProxy {
     async init() {
         this.#retrieveSysId();
         this.#retrieveModems();
+        this.#retrieveAudioOutputs();
+        this.#retrieveAudioInputs();
         await this.#retrieveTryDevicePrimaryConfig();
         await this.#retrieveDeviceConfig();
         await this.#configureWebSocket();
@@ -487,6 +638,38 @@ class GsmProxy {
     #getToken() {
         if (!this.config.token) return "";
         return this.config.token;
+    }
+
+    #getAudioOut() {
+        if (this.config.audioOut) {
+            const v = this.config.audioOut;
+            if (this.audioOutDevices.find((e) => e.device == v)) {
+                return v;
+            }
+        }
+        var dev = this.audioOutDevices.find((e) => e.isDefault == true);
+        var r = "default";
+        if (dev) {
+            r = dev.device;
+        }
+        this.config.audioOut = r;
+        return r;
+    }
+
+    #getAudioIn() {
+        if (this.config.audioIn) {
+            const v = this.config.audioIn;
+            if (this.audioInDevices.find((e) => e.device == v)) {
+                return v;
+            }
+        }
+        var dev = this.audioInDevices.find((e) => e.isDefault == true);
+        var r = "default";
+        if (dev) {
+            r = dev.device;
+        }
+        this.config.audioIn = r;
+        return r;
     }
 }
 
