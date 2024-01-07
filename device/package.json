@@ -9,10 +9,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.6.5",
     "dotenv": "^16.3.1",
     "node-record-lpcm16": "^1.0.1",
+    "preferences": "^2.0.2",
     "serialport-gsm": "^4.0.1",
     "speaker": "https://github.com/euguuu/node-speaker/tarball/hack_for_linux_arm64_build",
+    "winston": "^3.11.0",
     "wrtc": "^0.4.7",
     "ws": "^8.14.2"
   },
