@@ -3,7 +3,7 @@ const gsmDevice = new GsmProxy();
 process.on('SIGINT', function() {
   gsmDevice.destruct();
 });
-gsmDevice.init();//.then( () => console.log(gsmDevice.getId()));
+gsmDevice.init();
 
 /*
 process.exit(0);

@@ -1,5 +1,6 @@
 // Debug Params
 const alwaysPerformOnboarding = false;
+const alwaysPerformModemSelection = false;
 const logLevel = "silly"; //"silly";
 
 // Variables
@@ -7,13 +8,14 @@ const identifier = "com.gsm-proxy";
 const name = "GsmProxy";
 const onboardingUrl = "https://gsm-proxy-onboarding.glitch.me/api/onboard";
 const pingInterval = 30;
-const modemPath = "/dev/serial0";
 const modemSettings = {
     baudRate: 115200,
     incomingCallIndication: true,
     incomingSMSIndication: true,
     customInitCommand: " ",
 };
+const priorityOfModemAutomaticConnection = ["ttyS0", "ttyAMA0"];
+//const priorityOfModemAutomaticConnection = ["ttyAMA0", "ttyS0"];
 
 // Libraries
 const { execSync } = require("child_process");
@@ -33,6 +35,7 @@ class GsmProxy {
     constructor() {
         this.isRunning = true;
         this.ws = null;
+        this.arrayOfPastTries = [];
         this.config = new Preferences(identifier);
         this.logger = this.#createLogger();
         this.logger.debug(`${name} Created`);
@@ -42,7 +45,7 @@ class GsmProxy {
 
     // This is one of the main functions it is triggered, when modem has some event
     async onModemEvent(type, data) {
-        this.#wsSend({type:`m-${type}`, data: data});
+        this.#wsSend({ type: `m-${type}`, data: data });
     }
 
     // This is one of the main functions it is triggered, when user or cloud send some event to device
@@ -57,9 +60,13 @@ class GsmProxy {
     #loadHandlers() {
         var result = {};
         try {
-            const files = fs.readdirSync(path.join(__dirname, 'handlers'));
-            files.forEach(file => {
-                const classOfHanler = require(path.join(__dirname, 'handlers', file));
+            const files = fs.readdirSync(path.join(__dirname, "handlers"));
+            files.forEach((file) => {
+                const classOfHanler = require(path.join(
+                    __dirname,
+                    "handlers",
+                    file
+                ));
                 var coh = new classOfHanler(this);
                 result[coh.name] = coh;
             });
@@ -76,8 +83,6 @@ class GsmProxy {
         ussd(gsmModem);
 
         gsmModem.on("open", () => {
-            self.logger.debug(`Modem - Connected`);
-
             gsmModem.on("error", (data) => {
                 self.logger.debug(`Modem - Error : ` + JSON.stringify(data));
             });
@@ -89,25 +94,21 @@ class GsmProxy {
                     self.logger.debug(
                         `Modem - Disconnected : ` + JSON.stringify(data)
                     );
+                    self.gsmModem = self.#createModem();
                     self.#connectModem();
                 }
             });
 
             gsmModem.on("onNewIncomingCall", (result) => {
-                self.onModemEvent('call', result.data);
+                self.onModemEvent("call", result.data);
             });
 
             gsmModem.on("onNewMessageIndicator", (result) => {
-                self.onModemEvent('sms', result.data);
+                self.onModemEvent("sms", result.data);
             });
 
             gsmModem.on("onNewIncomingUSSD", (result) => {
-                self.onModemEvent('ussd', result.data);
-            });
-
-            self.logger.debug(`Modem - Initializing...`);
-            gsmModem.initializeModem(() => {
-                self.logger.debug(`Modem - Initialized`);
+                self.onModemEvent("ussd", result.data);
             });
         });
 
@@ -171,7 +172,7 @@ class GsmProxy {
 
     #wsReceive(obj) {
         try {
-            if (!obj.type || !obj.data){
+            if (!obj.type || !obj.data) {
                 this.logger.silly(obj);
                 return;
             }
@@ -211,6 +212,13 @@ class GsmProxy {
     }
 
     #connectModem(callback) {
+        const modemPath = this.#getModemPath();
+        if (!modemPath) {
+            this.logger.error(`No available modem found`);
+            if (callback)
+                callback(false);
+            return;
+        }
         const self = this;
         const objPart1 = self.config.device;
         const objPart2 = {
@@ -221,8 +229,51 @@ class GsmProxy {
             },
         };
         const settings = Object.assign(modemSettings, objPart1, objPart2);
-        self.logger.debug(`Modem - Connecting...`);
-        self.gsmModem.open(modemPath, settings, callback);
+        self.logger.debug(`Modem connecting to '${modemPath}'...`);
+        self.gsmModem.open(modemPath, settings, (error, result) => {
+            if (error) {
+                self.logger.debug(error);
+                self.arrayOfPastTries.push(modemPath);
+                self.#connectModem(callback);
+            } else {
+                self.gsmModem.executeCommand("AT", (result, err) => {
+                    if ((err && Object.keys(err).length > 0)||(!result || result.status != 'success')) {
+                        self.logger.debug(error);
+                        self.arrayOfPastTries.push(modemPath);
+                        self.#connectModem(callback);
+                    } else {
+                        self.arrayOfPastTries = [];
+                        self.config.modemPath = modemPath;
+                        self.config.save();
+                        self.logger.debug(`Modem connected`);
+                        self.logger.debug(`Modem initializing...`);
+                        self.gsmModem.initializeModem(() => {
+                            self.logger.debug(`Modem - Initialized`);
+                        });
+                        if (callback)
+                            callback(true);
+                    }
+                });
+            }
+        });
+    }
+
+    #getModemPath() {
+        if (!alwaysPerformModemSelection && (this.arrayOfPastTries.length == 0) && this.config.modemPath) {
+            this.logger.silly('Read modem path from config: '+this.config.modemPath);
+            return this.config.modemPath;
+        }
+        this.logger.silly('Guessing modem path...');
+        const bestModem = this.#findBestDeviceForModem();
+        if (!bestModem) return null;
+        return "/dev/" + bestModem;
+    }
+
+    async setModemPath(modem) {
+        const newModemPath = "/dev/" + modem;
+        if (this.config.modemPath == newModemPath) return;
+        this.config.modemPath = newModemPath;
+        this.destruct();
     }
 
     async #configureModem() {
@@ -322,6 +373,49 @@ class GsmProxy {
         this.logger.debug(`System code is '${this.config.id}'`);
     }
 
+    #findBestDeviceForModem() {
+        var pastTries = {};
+        this.arrayOfPastTries.forEach((pt) => {
+            pastTries[pt.substring(5)] = true;
+        });
+        var modemsAvailable = [];
+        this.modemsList.forEach((m) => {
+            if (!pastTries[m]) {
+                modemsAvailable.push(m);
+            }
+        });
+        for (let i = 0; i < priorityOfModemAutomaticConnection.length; i++) {
+            const pm = priorityOfModemAutomaticConnection[i];
+            for (let k = 0; k < modemsAvailable.length; k++) {
+                const m = modemsAvailable[k];
+                if (pm == m) {
+                    return m;
+                }
+            }
+        }
+        if (modemsAvailable.length > 0) return modemsAvailable[0];
+        return null;
+    }
+
+    #retrieveModems() {
+        this.modemsList = [];
+        this.logger.silly(`Retrieving modems from the sys params`);
+        try {
+            var stdout = execSync("find /dev/ -group dialout");
+            stdout
+                .toString()
+                .split("\n")
+                .forEach((m) => {
+                    if (m.length == 0) return;
+                    this.modemsList.push(m.substring(5));
+                });
+        } catch (error) {
+            this.logger.error(error);
+        }
+        this.logger.debug(`Modems available:`);
+        this.logger.debug(this.modemsList);
+    }
+
     async #retrieveTryDevicePrimaryConfig() {
         if (!alwaysPerformOnboarding && this.config.server && this.config.token)
             return;
@@ -372,6 +466,7 @@ class GsmProxy {
 
     async init() {
         this.#retrieveSysId();
+        this.#retrieveModems();
         await this.#retrieveTryDevicePrimaryConfig();
         await this.#retrieveDeviceConfig();
         await this.#configureWebSocket();
